@@ -232,11 +232,78 @@ function restfulUpgrade(e) {
     {
         $request = Typecho_Request::getInstance();
 
-        $customIp = $request->getServer('HTTP_X_TYPECHO_RESTFUL_IP');
-        if ($customIp != null) {
+        $customIp = self::resolveCommentIp($request);
+        if ($customIp !== null) {
             $comment['ip'] = $customIp;
         }
 
         return $comment;
+    }
+
+    /**
+     * @param Typecho_Request $request
+     * @return string|null
+     */
+    private static function resolveCommentIp($request)
+    {
+        $candidates = array(
+            $request->getServer('HTTP_X_TYPECHO_RESTFUL_IP'),
+            $request->getServer('HTTP_X_FORWARDED_FOR'),
+            $request->getServer('HTTP_X_REAL_IP'),
+            $request->getServer('HTTP_CF_CONNECTING_IP'),
+            $request->getServer('HTTP_TRUE_CLIENT_IP'),
+            $request->getServer('REMOTE_ADDR'),
+        );
+
+        foreach ($candidates as $candidate) {
+            $normalized = self::normalizeCommentIp($candidate);
+            if ($normalized !== null) {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param mixed $rawValue
+     * @return string|null
+     */
+    private static function normalizeCommentIp($rawValue)
+    {
+        if (!is_string($rawValue)) {
+            return null;
+        }
+
+        $value = trim($rawValue);
+        if ($value === '') {
+            return null;
+        }
+
+        if (strpos($value, ',') !== false) {
+            $segments = explode(',', $value);
+            $value = trim($segments[0]);
+        }
+
+        if (stripos($value, 'for=') === 0) {
+            $value = trim(substr($value, 4));
+        }
+
+        $value = trim($value, "\"' ");
+        if ($value === '' || strtolower($value) === 'unknown') {
+            return null;
+        }
+
+        if (strpos($value, '[') === 0 && strpos($value, ']') !== false) {
+            $value = substr($value, 1, strpos($value, ']') - 1);
+        } elseif (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/', $value, $matches)) {
+            $value = $matches[1];
+        }
+
+        if ($value === '') {
+            return null;
+        }
+
+        return substr($value, 0, 128);
     }
 }
