@@ -3,6 +3,7 @@
 namespace MoeFront\RestfulTests;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\Cookie\CookieJar;
 use GuzzleHttp\RequestOptions;
 use Medoo\Medoo;
 use PHPUnit\Framework\TestCase;
@@ -84,6 +85,56 @@ class RestfulTest extends TestCase
 
         $this->assertEquals('success', $result['status']);
         $this->assertTrue(is_array($result['data']));
+    }
+
+    public function testStatsAndCounters()
+    {
+        $statsResponse = self::$client->get('/index.php/api/stats', array('query' => array('cid' => 1)));
+        $statsResult = json_decode($statsResponse->getBody(), true);
+
+        $this->assertEquals('success', $statsResult['status']);
+        $this->assertArrayHasKey('viewsNum', $statsResult['data']);
+        $this->assertArrayHasKey('likesNum', $statsResult['data']);
+
+        $cookieJar = new CookieJar();
+
+        $before = self::$db->get('typecho_contents', array('viewsNum', 'likesNum'), array('cid' => 1));
+
+        $viewResponse1 = self::$client->post('/index.php/api/view', array(
+            RequestOptions::JSON => array('cid' => 1),
+            RequestOptions::COOKIES => $cookieJar,
+        ));
+        $viewResult1 = json_decode($viewResponse1->getBody(), true);
+        $this->assertEquals('success', $viewResult1['status']);
+        $this->assertTrue($viewResult1['data']['counted']);
+
+        $viewResponse2 = self::$client->post('/index.php/api/view', array(
+            RequestOptions::JSON => array('cid' => 1),
+            RequestOptions::COOKIES => $cookieJar,
+        ));
+        $viewResult2 = json_decode($viewResponse2->getBody(), true);
+        $this->assertEquals('success', $viewResult2['status']);
+        $this->assertFalse($viewResult2['data']['counted']);
+
+        $likeResponse1 = self::$client->post('/index.php/api/like', array(
+            RequestOptions::JSON => array('cid' => 1),
+            RequestOptions::COOKIES => $cookieJar,
+        ));
+        $likeResult1 = json_decode($likeResponse1->getBody(), true);
+        $this->assertEquals('success', $likeResult1['status']);
+        $this->assertTrue($likeResult1['data']['counted']);
+
+        $likeResponse2 = self::$client->post('/index.php/api/like', array(
+            RequestOptions::JSON => array('cid' => 1),
+            RequestOptions::COOKIES => $cookieJar,
+        ));
+        $likeResult2 = json_decode($likeResponse2->getBody(), true);
+        $this->assertEquals('success', $likeResult2['status']);
+        $this->assertFalse($likeResult2['data']['counted']);
+
+        $after = self::$db->get('typecho_contents', array('viewsNum', 'likesNum'), array('cid' => 1));
+        $this->assertEquals((int)$before['viewsNum'] + 1, (int)$after['viewsNum']);
+        $this->assertEquals((int)$before['likesNum'] + 1, (int)$after['likesNum']);
     }
 
     public function testComments()

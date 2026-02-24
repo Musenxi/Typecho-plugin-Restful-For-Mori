@@ -15,6 +15,50 @@ class Restful_Plugin implements Typecho_Plugin_Interface
     const ACTION_CLASS = 'Restful_Action';
 
     /**
+     * 确保计数字段存在
+     *
+     * @return void
+     */
+    public static function ensureCounterColumns()
+    {
+        $db = Typecho_Db::get();
+        $table = $db->getPrefix() . 'contents';
+
+        self::ensureColumn($db, $table, 'viewsNum', "INT(10) UNSIGNED NOT NULL DEFAULT 0");
+        self::ensureColumn($db, $table, 'likesNum', "INT(10) UNSIGNED NOT NULL DEFAULT 0");
+    }
+
+    /**
+     * @param Typecho_Db $db
+     * @param string $table
+     * @param string $column
+     * @param string $definition
+     * @return void
+     */
+    private static function ensureColumn($db, $table, $column, $definition)
+    {
+        $exists = false;
+        $safeColumn = addslashes($column);
+
+        try {
+            $rows = $db->fetchAll("SHOW COLUMNS FROM `{$table}` LIKE '{$safeColumn}'");
+            $exists = is_array($rows) && count($rows) > 0;
+        } catch (Exception $e) {
+            $exists = false;
+        }
+
+        if ($exists) {
+            return;
+        }
+
+        try {
+            $db->query("ALTER TABLE `{$table}` ADD COLUMN `{$column}` {$definition}");
+        } catch (Exception $e) {
+            // 忽略已存在或不支持 ALTER 的情况，避免影响插件初始化
+        }
+    }
+
+    /**
      * 激活插件方法,如果激活失败,直接抛出异常
      *
      * @access public
@@ -23,6 +67,8 @@ class Restful_Plugin implements Typecho_Plugin_Interface
      */
     public static function activate()
     {
+        self::ensureCounterColumns();
+
         $routes = call_user_func(array(self::ACTION_CLASS, 'getRoutes'));
         foreach ($routes as $route) {
             Helper::addRoute($route['name'], $route['uri'], self::ACTION_CLASS, $route['action']);
@@ -102,6 +148,38 @@ class Restful_Plugin implements Typecho_Plugin_Interface
             1 => _t('是'),
         ), 0, _t('高敏接口是否校验登录'), _t('开启后，高敏接口需要携带Cookie才能访问'));
         $form->addInput($validateLogin);
+
+        /* 阅读/点赞去重 Cookie 有效天数 */
+        $counterCookieDays = new Typecho_Widget_Helper_Form_Element_Text(
+            'counterCookieDays',
+            null,
+            '365',
+            _t('计数Cookie有效天数'),
+            _t('用于浏览数和点赞数去重；同一用户在 Cookie 未过期时不会重复计数。')
+        );
+        $form->addInput($counterCookieDays);
+
+        /* Redis 计数缓存 */
+        $redisEnabled = new Typecho_Widget_Helper_Form_Element_Radio('redisEnabled', array(
+            0 => _t('关闭'),
+            1 => _t('开启'),
+        ), 0, _t('Redis 计数缓存'), _t('开启后会将浏览/点赞计数写入 Redis，并与数据库同步。'));
+        $form->addInput($redisEnabled);
+
+        $redisHost = new Typecho_Widget_Helper_Form_Element_Text('redisHost', null, '127.0.0.1', _t('Redis Host'), _t('例如 127.0.0.1'));
+        $form->addInput($redisHost);
+
+        $redisPort = new Typecho_Widget_Helper_Form_Element_Text('redisPort', null, '6379', _t('Redis Port'), _t('默认 6379'));
+        $form->addInput($redisPort);
+
+        $redisPassword = new Typecho_Widget_Helper_Form_Element_Text('redisPassword', null, null, _t('Redis Password'), _t('无密码可留空'));
+        $form->addInput($redisPassword);
+
+        $redisDb = new Typecho_Widget_Helper_Form_Element_Text('redisDb', null, '0', _t('Redis DB'), _t('默认 0'));
+        $form->addInput($redisDb);
+
+        $redisPrefix = new Typecho_Widget_Helper_Form_Element_Text('redisPrefix', null, 'typecho:restful', _t('Redis Key 前缀'), _t('用于隔离不同站点数据'));
+        $form->addInput($redisPrefix);
         ?>
 <script>
 function restfulUpgrade(e) {

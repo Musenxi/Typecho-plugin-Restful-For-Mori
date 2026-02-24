@@ -50,6 +50,8 @@ CREATE TABLE `typecho_contents` (
   `status` varchar(16) DEFAULT 'publish',
   `password` varchar(32) DEFAULT NULL,
   `commentsNum` int(10) unsigned DEFAULT '0',
+  `viewsNum` int(10) unsigned DEFAULT '0',
+  `likesNum` int(10) unsigned DEFAULT '0',
   `allowComment` char(1) DEFAULT '0',
   `allowPing` char(1) DEFAULT '0',
   `allowFeed` char(1) DEFAULT '0',
@@ -59,9 +61,9 @@ CREATE TABLE `typecho_contents` (
   KEY `created` (`created`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT INTO `typecho_contents` (`cid`, `title`, `slug`, `created`, `modified`, `text`, `order`, `authorId`, `template`, `type`, `status`, `password`, `commentsNum`, `allowComment`, `allowPing`, `allowFeed`, `parent`) VALUES
-(1,	'欢迎使用 Typecho',	'start',	1516520040,	1516585449,	'<!--markdown-->如果您看到这篇文章,表示您的 blog 已经安装成功.',	0,	1,	NULL,	'post',	'publish',	NULL,	1,	'1',	'1',	'1',	0),
-(2,	'关于',	'start-page',	1516520053,	1516520053,	'<!--markdown-->本页面由 Typecho 创建, 这只是个测试页面.',	0,	1,	NULL,	'page',	'publish',	NULL,	0,	'1',	'1',	'1',	0);
+INSERT INTO `typecho_contents` (`cid`, `title`, `slug`, `created`, `modified`, `text`, `order`, `authorId`, `template`, `type`, `status`, `password`, `commentsNum`, `viewsNum`, `likesNum`, `allowComment`, `allowPing`, `allowFeed`, `parent`) VALUES
+(1,	'欢迎使用 Typecho',	'start',	1516520040,	1516585449,	'<!--markdown-->如果您看到这篇文章,表示您的 blog 已经安装成功.',	0,	1,	NULL,	'post',	'publish',	NULL,	1,	12,	3,	'1',	'1',	'1',	0),
+(2,	'关于',	'start-page',	1516520053,	1516520053,	'<!--markdown-->本页面由 Typecho 创建, 这只是个测试页面.',	0,	1,	NULL,	'page',	'publish',	NULL,	0,	5,	1,	'1',	'1',	'1',	0);
 
 DROP TABLE IF EXISTS `typecho_fields`;
 CREATE TABLE `typecho_fields` (

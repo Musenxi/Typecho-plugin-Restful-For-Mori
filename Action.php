@@ -30,6 +30,21 @@ class Restful_Action extends Typecho_Widget implements Widget_Interface_Do
      */
     private $httpParams;
 
+    /**
+     * @var Redis|null
+     */
+    private $redisClient = null;
+
+    /**
+     * @var bool
+     */
+    private $redisEnabled = false;
+
+    /**
+     * @var bool
+     */
+    private static $counterSchemaChecked = false;
+
     protected $request;
     protected $response;
 
@@ -42,6 +57,9 @@ class Restful_Action extends Typecho_Widget implements Widget_Interface_Do
         $this->config = $this->options->plugin('Restful');
         $this->request = $request;
         $this->response = $response;
+
+        $this->ensureCounterSchema();
+        $this->initRedisClient();
     }
 
     /**
@@ -203,7 +221,7 @@ class Restful_Action extends Typecho_Widget implements Widget_Interface_Do
      */
     private function checkState($route)
     {
-        $state = $this->config->$route;
+        $state = isset($this->config->$route) ? $this->config->$route : 1;
         if (!$state) {
             $this->throwError('This API has been disabled.', 403);
         }
@@ -211,6 +229,303 @@ class Restful_Action extends Typecho_Widget implements Widget_Interface_Do
         if ($this->config->apiToken && $token != $this->config->apiToken) {
             $this->throwError('apiToken is invalid', 403);
         }
+    }
+
+    /**
+     * 确保计数字段存在
+     *
+     * @return void
+     */
+    private function ensureCounterSchema()
+    {
+        if (self::$counterSchemaChecked) {
+            return;
+        }
+
+        self::$counterSchemaChecked = true;
+        Restful_Plugin::ensureCounterColumns();
+    }
+
+    /**
+     * 初始化 Redis 客户端
+     *
+     * @return void
+     */
+    private function initRedisClient()
+    {
+        if (!class_exists('Redis')) {
+            return;
+        }
+
+        $enabled = isset($this->config->redisEnabled) ? (int)$this->config->redisEnabled : 0;
+        if ($enabled !== 1) {
+            return;
+        }
+
+        $host = trim(isset($this->config->redisHost) ? $this->config->redisHost : '127.0.0.1');
+        $port = (int)(isset($this->config->redisPort) ? $this->config->redisPort : 6379);
+        $password = trim(isset($this->config->redisPassword) ? $this->config->redisPassword : '');
+        $db = (int)(isset($this->config->redisDb) ? $this->config->redisDb : 0);
+
+        if (empty($host)) {
+            return;
+        }
+
+        if ($port <= 0) {
+            $port = 6379;
+        }
+
+        try {
+            $client = new Redis();
+            $connected = $client->connect($host, $port, 1.5);
+            if (!$connected) {
+                return;
+            }
+            if (!empty($password)) {
+                $client->auth($password);
+            }
+            if ($db > 0) {
+                $client->select($db);
+            }
+            $this->redisClient = $client;
+            $this->redisEnabled = true;
+        } catch (Exception $e) {
+            $this->redisEnabled = false;
+            $this->redisClient = null;
+        }
+    }
+
+    /**
+     * @return string
+     */
+    private function getRedisPrefix()
+    {
+        $prefix = trim(isset($this->config->redisPrefix) ? $this->config->redisPrefix : '');
+        if ($prefix === '') {
+            return 'typecho:restful';
+        }
+        return $prefix;
+    }
+
+    /**
+     * @param int $cid
+     * @return string
+     */
+    private function getRedisCounterKey($cid)
+    {
+        return $this->getRedisPrefix() . ':counter:' . (int)$cid;
+    }
+
+    /**
+     * @param int $cid
+     * @param string $field
+     * @return int|null
+     */
+    private function getCounterFromRedis($cid, $field)
+    {
+        if (!$this->redisEnabled || !$this->redisClient) {
+            return null;
+        }
+
+        try {
+            $value = $this->redisClient->hGet($this->getRedisCounterKey($cid), $field);
+            if ($value === false || $value === null || $value === '') {
+                return null;
+            }
+            return (int)$value;
+        } catch (Exception $e) {
+            return null;
+        }
+    }
+
+    /**
+     * @param int $cid
+     * @param int $viewsNum
+     * @param int $likesNum
+     * @return void
+     */
+    private function syncCountersToRedis($cid, $viewsNum, $likesNum)
+    {
+        if (!$this->redisEnabled || !$this->redisClient) {
+            return;
+        }
+
+        try {
+            $this->redisClient->hMSet($this->getRedisCounterKey($cid), array(
+                'viewsNum' => (int)$viewsNum,
+                'likesNum' => (int)$likesNum,
+            ));
+        } catch (Exception $e) {
+            // ignore redis sync error
+        }
+    }
+
+    /**
+     * @return int
+     */
+    private function getCounterCookieExpireAt()
+    {
+        $days = isset($this->config->counterCookieDays) ? (int)$this->config->counterCookieDays : 365;
+        if ($days <= 0) {
+            $days = 365;
+        }
+        return time() + $days * 86400;
+    }
+
+    /**
+     * @param string $metric view|like
+     * @param int $cid
+     * @return string
+     */
+    private function getCounterCookieName($metric, $cid)
+    {
+        return '__typecho_restful_' . $metric . '_' . (int)$cid;
+    }
+
+    /**
+     * @param string $metric
+     * @param int $cid
+     * @return bool
+     */
+    private function hasCounterCookie($metric, $cid)
+    {
+        $cookieName = $this->getCounterCookieName($metric, $cid);
+        $value = null;
+
+        if (method_exists($this->request, 'getCookie')) {
+            $value = $this->request->getCookie($cookieName);
+        }
+
+        if ($value === null || $value === '') {
+            $value = isset($_COOKIE[$cookieName]) ? $_COOKIE[$cookieName] : null;
+        }
+
+        if ($value === null || $value === '') {
+            $value = Typecho_Cookie::get($cookieName);
+        }
+
+        return (string)$value === '1';
+    }
+
+    /**
+     * @param string $metric
+     * @param int $cid
+     * @return void
+     */
+    private function setCounterCookie($metric, $cid)
+    {
+        $name = $this->getCounterCookieName($metric, $cid);
+        setcookie($name, '1', $this->getCounterCookieExpireAt(), '/');
+        $_COOKIE[$name] = '1';
+    }
+
+    /**
+     * @param mixed $value
+     * @return int
+     */
+    private function normalizeCounterValue($value)
+    {
+        if ($value === null || $value === '') {
+            return 0;
+        }
+        return max(0, (int)$value);
+    }
+
+    /**
+     * 通过 cid 或 slug 获取文章
+     *
+     * @param mixed $cid
+     * @param string $slug
+     * @return array
+     */
+    private function getCounterTarget($cid, $slug)
+    {
+        $select = $this->db
+            ->select('cid', 'slug', 'viewsNum', 'likesNum')
+            ->from('table.contents')
+            ->where('status = ?', 'publish')
+            ->where('created < ?', time())
+            ->where('password IS NULL');
+
+        if (is_numeric($cid)) {
+            $select->where('cid = ?', $cid);
+        } else {
+            $select->where('slug = ?', $slug);
+        }
+
+        $post = $this->db->fetchRow($select);
+        if (!is_array($post) || count($post) === 0) {
+            $this->throwError('post not exists', 404);
+        }
+
+        $post['cid'] = (int)$post['cid'];
+        $post['viewsNum'] = $this->normalizeCounterValue(isset($post['viewsNum']) ? $post['viewsNum'] : 0);
+        $post['likesNum'] = $this->normalizeCounterValue(isset($post['likesNum']) ? $post['likesNum'] : 0);
+        return $post;
+    }
+
+    /**
+     * @param int $cid
+     * @return array
+     */
+    private function getCounterTargetByCid($cid)
+    {
+        return $this->getCounterTarget((int)$cid, '');
+    }
+
+    /**
+     * @param int $cid
+     * @param string $field
+     * @return void
+     */
+    private function incrementCounterField($cid, $field)
+    {
+        $allowFields = array('viewsNum', 'likesNum');
+        if (!in_array($field, $allowFields, true)) {
+            $this->throwError('invalid field', 500);
+        }
+
+        $table = $this->db->getPrefix() . 'contents';
+        $cid = (int)$cid;
+        $fieldSql = addslashes($field);
+        $this->db->query("UPDATE `{$table}` SET `{$fieldSql}` = COALESCE(`{$fieldSql}`, 0) + 1 WHERE `cid` = {$cid}");
+    }
+
+    /**
+     * @param array $post
+     * @return array
+     */
+    private function buildCounterPayload($post)
+    {
+        $cid = (int)$post['cid'];
+        $viewsNum = $this->normalizeCounterValue($post['viewsNum']);
+        $likesNum = $this->normalizeCounterValue($post['likesNum']);
+
+        $cachedViews = $this->getCounterFromRedis($cid, 'viewsNum');
+        $cachedLikes = $this->getCounterFromRedis($cid, 'likesNum');
+
+        if ($cachedViews !== null) {
+            $viewsNum = max($viewsNum, $cachedViews);
+        }
+        if ($cachedLikes !== null) {
+            $likesNum = max($likesNum, $cachedLikes);
+        }
+
+        if ($cachedViews === null
+            || $cachedLikes === null
+            || $viewsNum !== (int)$cachedViews
+            || $likesNum !== (int)$cachedLikes) {
+            $this->syncCountersToRedis($cid, $viewsNum, $likesNum);
+        }
+
+        return array(
+            'cid' => $cid,
+            'slug' => isset($post['slug']) ? $post['slug'] : '',
+            'viewsNum' => $viewsNum,
+            'likesNum' => $likesNum,
+            'viewed' => $this->hasCounterCookie('view', $cid),
+            'liked' => $this->hasCounterCookie('like', $cid),
+        );
     }
 
     /**
@@ -303,7 +618,7 @@ class Restful_Action extends Typecho_Widget implements Widget_Interface_Do
         }
 
         $select = $this->db
-            ->select('cid', 'title', 'created', 'modified', 'slug', 'commentsNum', 'text', 'type')
+            ->select('cid', 'title', 'created', 'modified', 'slug', 'commentsNum', 'viewsNum', 'likesNum', 'text', 'type')
             ->from('table.contents')
             ->where('type = ?', 'post')
             ->where('status = ?', 'publish')
@@ -451,7 +766,7 @@ class Restful_Action extends Typecho_Widget implements Widget_Interface_Do
         $parseMarkdown = $this->shouldParseMarkdown();
 
         $select = $this->db
-            ->select('title', 'cid', 'created', 'type', 'slug', 'commentsNum', 'text')
+            ->select('title', 'cid', 'created', 'type', 'slug', 'commentsNum', 'viewsNum', 'likesNum', 'text')
             ->from('table.contents')
             ->where('password IS NULL');
 
@@ -469,6 +784,93 @@ class Restful_Action extends Typecho_Widget implements Widget_Interface_Do
         } else {
             $this->throwError('post not exists', 404);
         }
+    }
+
+    /**
+     * 获取文章浏览/点赞统计
+     *
+     * @return void
+     */
+    public function statsAction()
+    {
+        $this->lockMethod('get');
+        $this->checkState('stats');
+
+        $slug = trim($this->getParams('slug', ''));
+        $cid = $this->getParams('cid', '');
+
+        if (!is_numeric($cid) && $slug === '') {
+            $this->throwError('cid or slug is required');
+        }
+
+        $post = $this->getCounterTarget($cid, $slug);
+        $this->throwData($this->buildCounterPayload($post));
+    }
+
+    /**
+     * 浏览计数 +1（同一 Cookie 生命周期内仅记一次）
+     *
+     * @return void
+     */
+    public function viewAction()
+    {
+        $this->lockMethod('post');
+        $this->checkState('view');
+
+        $slug = trim($this->getParams('slug', ''));
+        $cid = $this->getParams('cid', '');
+
+        if (!is_numeric($cid) && $slug === '') {
+            $this->throwError('cid or slug is required');
+        }
+
+        $post = $this->getCounterTarget($cid, $slug);
+        $postCid = (int)$post['cid'];
+        $counted = false;
+
+        if (!$this->hasCounterCookie('view', $postCid)) {
+            $this->incrementCounterField($postCid, 'viewsNum');
+            $this->setCounterCookie('view', $postCid);
+            $counted = true;
+        }
+
+        $latest = $this->getCounterTargetByCid($postCid);
+        $payload = $this->buildCounterPayload($latest);
+        $payload['counted'] = $counted;
+        $this->throwData($payload);
+    }
+
+    /**
+     * 点赞计数 +1（同一 Cookie 生命周期内仅记一次）
+     *
+     * @return void
+     */
+    public function likeAction()
+    {
+        $this->lockMethod('post');
+        $this->checkState('like');
+
+        $slug = trim($this->getParams('slug', ''));
+        $cid = $this->getParams('cid', '');
+
+        if (!is_numeric($cid) && $slug === '') {
+            $this->throwError('cid or slug is required');
+        }
+
+        $post = $this->getCounterTarget($cid, $slug);
+        $postCid = (int)$post['cid'];
+        $counted = false;
+
+        if (!$this->hasCounterCookie('like', $postCid)) {
+            $this->incrementCounterField($postCid, 'likesNum');
+            $this->setCounterCookie('like', $postCid);
+            $counted = true;
+        }
+
+        $latest = $this->getCounterTargetByCid($postCid);
+        $payload = $this->buildCounterPayload($latest);
+        $payload['counted'] = $counted;
+        $this->throwData($payload);
     }
 
     /**
@@ -775,7 +1177,7 @@ class Restful_Action extends Typecho_Widget implements Widget_Interface_Do
         $showDigest = trim($this->getParams('showDigest', ''));
         $parseMarkdown = $this->shouldParseMarkdown();
 
-        $select = $this->db->select('cid', 'title', 'slug', 'created', 'modified', 'type', 'text')
+        $select = $this->db->select('cid', 'title', 'slug', 'created', 'modified', 'type', 'viewsNum', 'likesNum', 'text')
             ->from('table.contents')
             ->where('status = ?', 'publish')
             ->where('password IS NULL')
@@ -1127,6 +1529,8 @@ class Restful_Action extends Typecho_Widget implements Widget_Interface_Do
     private function filter($value, $parseMarkdown = true)
     {
         $contentWidget = $this->widget('Widget_Abstract_Contents');
+        $viewsNum = isset($value['viewsNum']) ? $this->normalizeCounterValue($value['viewsNum']) : null;
+        $likesNum = isset($value['likesNum']) ? $this->normalizeCounterValue($value['likesNum']) : null;
         $value['text'] = isset($value['text']) ? $value['text'] : null;
         $value['digest'] = isset($value['digest']) ? $value['digest'] : null;
 
@@ -1160,6 +1564,12 @@ class Restful_Action extends Typecho_Widget implements Widget_Interface_Do
         }
         // Custom fields
         $value['fields'] = $this->getCustomFields($value['cid']);
+        if ($viewsNum !== null) {
+            $value['viewsNum'] = $viewsNum;
+        }
+        if ($likesNum !== null) {
+            $value['likesNum'] = $likesNum;
+        }
 
         return $value;
     }

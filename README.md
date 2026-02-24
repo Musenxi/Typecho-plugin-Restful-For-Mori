@@ -75,6 +75,49 @@ PS： `showDigest` 有两个可选的值，分别为 `more` 和 `excerpt`. 当�
 | slug | string | 文章/页面别名  | 二选一 |
 | parseMarkdown | bool | 是否由 Restful 将内容解析为 HTML（默认 true） | 可选 |
 
+返回字段中额外包含：
+
+- `viewsNum`：浏览数（对应 `typecho_contents.viewsNum`）
+- `likesNum`：点赞数（对应 `typecho_contents.likesNum`）
+
+### 文章统计
+
+`GET /api/stats`
+
+| 参数   | 类型     | 描述       |     |
+|------|--------|----------|-----|
+| cid  | int    | 文章/页面 ID | 二选一 |
+| slug | string | 文章/页面别名  | 二选一 |
+
+返回：
+
+- `viewsNum` 浏览数
+- `likesNum` 点赞数
+- `viewed` 当前 Cookie 是否已计过浏览
+- `liked` 当前 Cookie 是否已计过点赞
+
+### 浏览数 +1
+
+`POST /api/view`
+
+| 参数   | 类型     | 描述       |     |
+|------|--------|----------|-----|
+| cid  | int    | 文章/页面 ID | 二选一 |
+| slug | string | 文章/页面别名  | 二选一 |
+
+PS: 同一浏览器在 Cookie 未过期前不会重复计数。计数会同步写入数据库 `typecho_contents.viewsNum`。
+
+### 点赞数 +1
+
+`POST /api/like`
+
+| 参数   | 类型     | 描述       |     |
+|------|--------|----------|-----|
+| cid  | int    | 文章/页面 ID | 二选一 |
+| slug | string | 文章/页面别名  | 二选一 |
+
+PS: 同一浏览器在 Cookie 未过期前不会重复计数。计数会同步写入数据库 `typecho_contents.likesNum`。
+
 ### 评论列表
 
 `GET /api/comments`
@@ -192,6 +235,14 @@ define('__TYPECHO_RESTFUL_PREFIX__', '/rest/');
 ```
 
 **重新启用插件**，此时你可以通过 `/rest/*` 访问相关 API.
+
+### 浏览/点赞计数配置
+
+插件后台新增了以下配置项：
+
+- `计数Cookie有效天数`：控制浏览/点赞去重窗口
+- `Redis 计数缓存`：开启后写入 Redis（并持续同步数据库）
+- `Redis Host/Port/Password/DB/Key前缀`：Redis 连接参数
 
 ## License
 
