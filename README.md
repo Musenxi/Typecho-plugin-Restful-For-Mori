@@ -244,6 +244,14 @@ define('__TYPECHO_RESTFUL_PREFIX__', '/rest/');
 - `Redis 计数缓存`：开启后写入 Redis（并持续同步数据库）
 - `Redis Host/Port/Password/DB/Key前缀`：Redis 连接参数
 
+### Redis 用户名说明
+
+- 不是所有 Redis 都需要用户名：
+- 传统 `requirepass` 模式通常只需要密码。
+- Redis 6+ ACL 模式可能需要 `username + password`。
+- 当前插件配置面板仅提供 `Redis Password`，代码使用 `auth(password)` 认证，不单独读取用户名。
+- 因此，如果你的 Redis 必须使用自定义 ACL 用户名，请先确保 `default` 用户可用，或自行扩展插件增加 `redisUsername` 支持。
+
 ### 计数字段自动补齐
 
 - 插件在激活时会自动检查并补齐 `typecho_contents` 表的以下字段：
