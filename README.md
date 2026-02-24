@@ -244,6 +244,34 @@ define('__TYPECHO_RESTFUL_PREFIX__', '/rest/');
 - `Redis 计数缓存`：开启后写入 Redis（并持续同步数据库）
 - `Redis Host/Port/Password/DB/Key前缀`：Redis 连接参数
 
+### 计数字段自动补齐
+
+- 插件在激活时会自动检查并补齐 `typecho_contents` 表的以下字段：
+- `viewsNum`（浏览数）
+- `likesNum`（点赞数）
+- 如果你的旧库缺少字段，可在插件管理里执行“检查并更新插件”按钮，或禁用后重新启用插件触发检查。
+
+### Redis 键结构与同步策略
+
+- 开启 `Redis 计数缓存` 后，插件会将每篇文章计数写入 Hash：
+- `<redisPrefix>:counter:<cid>`
+- Hash 字段：
+- `viewsNum`
+- `likesNum`
+- 浏览/点赞接口的真实计数仍以数据库 `typecho_contents` 为准（`POST /api/view`、`POST /api/like` 先更新数据库）。
+- 读取统计（`GET /api/stats`）时会取数据库值与 Redis 值中的较大值，并回写 Redis，确保缓存与数据库最终一致。
+
+### Cookie 去重规则
+
+- 浏览 Cookie：`__typecho_restful_view_<cid>`
+- 点赞 Cookie：`__typecho_restful_like_<cid>`
+- 在 `计数Cookie有效天数` 窗口内，同一浏览器对同一文章不会重复计数。
+
+### 与 Socket.IO 的职责边界
+
+- Restful 插件负责提供统计读写接口（`/api/stats`、`/api/view`、`/api/like`）。
+- 实时广播（如在线人数、正在阅读人数）由前端应用（例如 Next.js + Socket.IO 服务）负责；插件本身不直接维护 Socket 连接。
+
 ## License
 
 `typecho-plugin-restful` is MIT licensed.
