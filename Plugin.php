@@ -74,6 +74,9 @@ class Restful_Plugin implements Typecho_Plugin_Interface
             Helper::addRoute($route['name'], $route['uri'], self::ACTION_CLASS, $route['action']);
         }
         Typecho_Plugin::factory('Widget_Feedback')->comment = array(__CLASS__, 'comment');
+        Typecho_Plugin::factory('Widget_Contents_Post_Edit')->finishPublish = array(__CLASS__, 'handlePostPublish');
+        Typecho_Plugin::factory('Widget_Comments_Edit')->mark = array(__CLASS__, 'handleCommentMark');
+        Typecho_Plugin::factory('index.php')->end = array(__CLASS__, 'handleRequestEnd');
 
         return '_(:з」∠)_';
     }
@@ -180,6 +183,49 @@ class Restful_Plugin implements Typecho_Plugin_Interface
 
         $redisPrefix = new Typecho_Widget_Helper_Form_Element_Text('redisPrefix', null, 'typecho:restful', _t('Redis Key 前缀'), _t('用于隔离不同站点数据'));
         $form->addInput($redisPrefix);
+
+        echo '<h3>Mori 更新通知</h3>';
+
+        $moriWebhookUrl = new Typecho_Widget_Helper_Form_Element_Text(
+            'moriWebhookUrl',
+            null,
+            '',
+            _t('Mori 更新地址'),
+            _t('用于接收更新通知的 Webhook 地址，例如 https://mori.example.com/api/typecho-webhook 。留空则不发送。')
+        );
+        $form->addInput($moriWebhookUrl);
+
+        $moriWebhookToken = new Typecho_Widget_Helper_Form_Element_Text(
+            'moriWebhookToken',
+            null,
+            '',
+            _t('Mori Webhook Token'),
+            _t('可选。将以请求头 X-Mori-Webhook-Token 发送。')
+        );
+        $form->addInput($moriWebhookToken);
+
+        $moriWebhookTimeout = new Typecho_Widget_Helper_Form_Element_Text(
+            'moriWebhookTimeout',
+            null,
+            '3',
+            _t('Mori 请求超时(秒)'),
+            _t('建议 2~5 秒，避免阻塞后台操作。')
+        );
+        $form->addInput($moriWebhookTimeout);
+
+        $moriWebhookEvents = new Typecho_Widget_Helper_Form_Element_Checkbox(
+            'moriWebhookEvents',
+            array(
+                'post' => _t('文章发布/更新'),
+                'comment' => _t('评论通过审核'),
+                'settings' => _t('网站设置变更'),
+                'meta' => _t('新增/更新分类标签'),
+            ),
+            array('post', 'comment', 'settings', 'meta'),
+            _t('Mori 更新触发事件'),
+            _t('勾选需要触发 Mori 更新的事件。')
+        );
+        $form->addInput($moriWebhookEvents);
         ?>
 <script>
 function restfulUpgrade(e) {
@@ -305,5 +351,318 @@ function restfulUpgrade(e) {
         }
 
         return substr($value, 0, 128);
+    }
+
+    /**
+     * 文章发布/更新后通知 Mori
+     *
+     * @param array|object $contents
+     * @param Widget_Contents_Post_Edit $edit
+     * @return void
+     */
+    public static function handlePostPublish($contents, $edit)
+    {
+        $type = self::readValue($contents, 'type', 'post');
+        if ($type !== 'post') {
+            return;
+        }
+
+        self::notifyMori('post.publish', self::buildContentPayload($contents));
+    }
+
+    /**
+     * 评论状态变更后通知 Mori
+     *
+     * @param array|object $comment
+     * @param Widget_Comments_Edit $edit
+     * @param string $status
+     * @return void
+     */
+    public static function handleCommentMark($comment, $edit, $status)
+    {
+        if ($status !== 'approved') {
+            return;
+        }
+
+        $payload = array(
+            'coid' => self::readInt($comment, 'coid'),
+            'cid' => self::readInt($comment, 'cid'),
+            'status' => $status,
+            'created' => self::readValue($comment, 'created'),
+        );
+
+        self::notifyMori('comment.approved', $payload);
+    }
+
+    /**
+     * 检测后台设置/分类/标签变更
+     *
+     * @return void
+     */
+    public static function handleRequestEnd()
+    {
+        $request = Typecho_Request::getInstance();
+        if (!$request) {
+            return;
+        }
+
+        if (!$request->isPost()) {
+            return;
+        }
+
+        $action = self::resolveActionFromRequest($request);
+        if ($action === '') {
+            return;
+        }
+
+        if (strpos($action, 'options-') === 0) {
+            self::notifyMori('settings.update', array(
+                'group' => substr($action, strlen('options-')),
+                'action' => $action,
+            ));
+            return;
+        }
+
+        if ($action === 'metas-category-edit' || $action === 'metas-tag-edit') {
+            $payload = array(
+                'action' => $action,
+                'do' => $request->get('do'),
+                'type' => $request->get('type'),
+                'name' => $request->get('name'),
+                'slug' => $request->get('slug'),
+                'mid' => $request->get('mid'),
+            );
+            self::notifyMori('meta.update', self::filterPayload($payload));
+        }
+    }
+
+    /**
+     * 触发 Mori 更新通知
+     *
+     * @param string $event
+     * @param array $payload
+     * @return void
+     */
+    public static function notifyMori($event, array $payload = array())
+    {
+        $options = Helper::options();
+        $config = $options->plugin('Restful');
+
+        $url = isset($config->moriWebhookUrl) ? trim($config->moriWebhookUrl) : '';
+        if ($url === '') {
+            return;
+        }
+
+        $group = self::getEventGroup($event);
+        if (!self::isMoriEventEnabled($config, $group)) {
+            return;
+        }
+
+        if (!function_exists('curl_init')) {
+            return;
+        }
+
+        $timeout = isset($config->moriWebhookTimeout) ? (int)$config->moriWebhookTimeout : 3;
+        if ($timeout <= 0) {
+            $timeout = 3;
+        }
+
+        $body = array(
+            'event' => $event,
+            'timestamp' => time(),
+            'source' => 'typecho-restful',
+            'site' => array(
+                'title' => $options->title,
+                'url' => $options->index,
+            ),
+            'payload' => $payload,
+        );
+
+        $headers = array('Content-Type: application/json; charset=utf-8');
+        if (isset($config->moriWebhookToken) && trim($config->moriWebhookToken) !== '') {
+            $headers[] = 'X-Mori-Webhook-Token: ' . trim($config->moriWebhookToken);
+        }
+
+        $jsonFlags = 0;
+        if (defined('JSON_UNESCAPED_UNICODE')) {
+            $jsonFlags |= JSON_UNESCAPED_UNICODE;
+        }
+        $jsonBody = json_encode($body, $jsonFlags);
+        if ($jsonBody === false) {
+            return;
+        }
+
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonBody);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $timeout);
+        curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
+        curl_exec($ch);
+        curl_close($ch);
+    }
+
+    /**
+     * @param Typecho_Config $config
+     * @param string $group
+     * @return bool
+     */
+    private static function isMoriEventEnabled($config, $group)
+    {
+        if ($group === '') {
+            return true;
+        }
+
+        if (!isset($config->moriWebhookEvents)) {
+            return true;
+        }
+
+        $events = self::normalizeMoriEvents($config->moriWebhookEvents);
+        return in_array($group, $events, true);
+    }
+
+    /**
+     * @param mixed $raw
+     * @return array
+     */
+    private static function normalizeMoriEvents($raw)
+    {
+        if (is_array($raw)) {
+            return array_values(array_filter($raw));
+        }
+
+        if (!is_string($raw)) {
+            return array();
+        }
+
+        $raw = trim($raw);
+        if ($raw === '') {
+            return array();
+        }
+
+        $parts = preg_split('/[,\|]/', $raw);
+        $parts = array_map('trim', $parts);
+        return array_values(array_filter($parts));
+    }
+
+    /**
+     * @param string $event
+     * @return string
+     */
+    private static function getEventGroup($event)
+    {
+        if (!is_string($event)) {
+            return '';
+        }
+
+        $event = trim($event);
+        if ($event === '') {
+            return '';
+        }
+
+        $parts = explode('.', $event, 2);
+        return strtolower(trim($parts[0]));
+    }
+
+    /**
+     * @param Typecho_Request $request
+     * @return string
+     */
+    private static function resolveActionFromRequest($request)
+    {
+        $pathInfo = '';
+        if (method_exists($request, 'getPathInfo')) {
+            $pathInfo = $request->getPathInfo();
+        }
+        if ($pathInfo === '' && method_exists($request, 'getRequestUri')) {
+            $pathInfo = $request->getRequestUri();
+        }
+
+        if (!is_string($pathInfo) || $pathInfo === '') {
+            return '';
+        }
+
+        $pathInfo = parse_url($pathInfo, PHP_URL_PATH);
+        if (!is_string($pathInfo) || $pathInfo === '') {
+            return '';
+        }
+
+        $pathInfo = '/' . ltrim($pathInfo, '/');
+        if (strpos($pathInfo, '/index.php/') === 0) {
+            $pathInfo = substr($pathInfo, strlen('/index.php'));
+        }
+
+        $pathInfo = ltrim($pathInfo, '/');
+        if (strpos($pathInfo, 'action/') !== 0) {
+            return '';
+        }
+
+        return substr($pathInfo, strlen('action/'));
+    }
+
+    /**
+     * @param array|object $data
+     * @param string $key
+     * @param mixed $default
+     * @return mixed
+     */
+    private static function readValue($data, $key, $default = null)
+    {
+        if (is_array($data) && array_key_exists($key, $data)) {
+            return $data[$key];
+        }
+
+        if (is_object($data) && isset($data->$key)) {
+            return $data->$key;
+        }
+
+        return $default;
+    }
+
+    /**
+     * @param array|object $data
+     * @param string $key
+     * @return int|null
+     */
+    private static function readInt($data, $key)
+    {
+        $value = self::readValue($data, $key);
+        if (is_numeric($value)) {
+            return (int)$value;
+        }
+        return null;
+    }
+
+    /**
+     * @param array|object $contents
+     * @return array
+     */
+    private static function buildContentPayload($contents)
+    {
+        return self::filterPayload(array(
+            'cid' => self::readInt($contents, 'cid'),
+            'slug' => self::readValue($contents, 'slug'),
+            'title' => self::readValue($contents, 'title'),
+            'type' => self::readValue($contents, 'type'),
+            'status' => self::readValue($contents, 'status'),
+            'created' => self::readValue($contents, 'created'),
+            'modified' => self::readValue($contents, 'modified'),
+        ));
+    }
+
+    /**
+     * @param array $payload
+     * @return array
+     */
+    private static function filterPayload(array $payload)
+    {
+        foreach ($payload as $key => $value) {
+            if ($value === null || $value === '') {
+                unset($payload[$key]);
+            }
+        }
+        return $payload;
     }
 }

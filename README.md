@@ -280,6 +280,41 @@ define('__TYPECHO_RESTFUL_PREFIX__', '/rest/');
 - Restful 插件负责提供统计读写接口（`/api/stats`、`/api/view`、`/api/like`）。
 - 实时广播（如在线人数、正在阅读人数）由前端应用（例如 Next.js + Socket.IO 服务）负责；插件本身不直接维护 Socket 连接。
 
+### Mori 更新通知（Webhook）
+
+插件可在以下动作发生时向 Mori 站点发送 JSON `POST`：
+
+- 文章发布/更新（后台发布或 `POST /api/postArticle`）
+- 评论通过审核
+- 网站设置变更
+- 新增/更新分类标签（后台新增或 `POST /api/addMetas`）
+
+后台新增配置项：
+
+- `Mori 更新地址`
+- `Mori Webhook Token`（可选，请求头 `X-Mori-Webhook-Token`）
+- `Mori 请求超时(秒)`
+- `Mori 更新触发事件`
+
+请求体示例：
+
+```json
+{
+  "event": "post.publish",
+  "timestamp": 1700000000,
+  "source": "typecho-restful",
+  "site": {
+    "title": "My Blog",
+    "url": "https://blog.example.com/"
+  },
+  "payload": {
+    "cid": 1,
+    "slug": "hello-world",
+    "title": "Hello World"
+  }
+}
+```
+
 ## License
 
 `typecho-plugin-restful` is MIT licensed.

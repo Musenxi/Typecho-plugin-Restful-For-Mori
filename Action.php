@@ -1342,6 +1342,21 @@ class Restful_Action extends Typecho_Widget implements Widget_Interface_Do
                 $this->refreshMetas($midArray);
             }
 
+            $eventSlug = $slug;
+            if (empty($eventSlug) && !empty($articleData['slug'])) {
+                $eventSlug = $articleData['slug'];
+            }
+
+            Restful_Plugin::notifyMori($type === 'update' ? 'post.update' : 'post.publish', array(
+                'cid' => isset($cid) ? (int)$cid : null,
+                'slug' => $eventSlug,
+                'title' => $title,
+                'authorId' => is_numeric($authorId) ? (int)$authorId : null,
+                'type' => 'post',
+                'action' => $type,
+                'mid' => $mid,
+            ));
+
             $this->throwData($res);
         } catch (\Typecho\Db\Exception $e) {
             $this->throwError($e->getMessage());
@@ -1372,6 +1387,12 @@ class Restful_Action extends Typecho_Widget implements Widget_Interface_Do
             'type' => $type,
             'slug' => empty($slug) ? $name : $slug,
         ]));
+        Restful_Plugin::notifyMori('meta.create', array(
+            'mid' => is_numeric($res) ? (int)$res : null,
+            'type' => $type,
+            'name' => $name,
+            'slug' => empty($slug) ? $name : $slug,
+        ));
         $this->throwData($res);
     }
 
