@@ -284,7 +284,7 @@ define('__TYPECHO_RESTFUL_PREFIX__', '/rest/');
 
 插件可在以下动作发生时向 Mori 站点发送 JSON `POST`：
 
-- 文章发布/更新（后台发布或 `POST /api/postArticle`）
+- 文章/页面发布或更新（后台发布，文章也包括 `POST /api/postArticle`）
 - 评论通过审核
 - 网站设置变更
 - 新增/更新分类标签（后台新增或 `POST /api/addMetas`）
@@ -310,7 +310,8 @@ define('__TYPECHO_RESTFUL_PREFIX__', '/rest/');
   "payload": {
     "cid": 1,
     "slug": "hello-world",
-    "title": "Hello World"
+    "title": "Hello World",
+    "type": "post"
   }
 }
 ```

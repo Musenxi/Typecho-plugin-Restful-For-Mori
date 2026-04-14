@@ -75,6 +75,7 @@ class Restful_Plugin implements Typecho_Plugin_Interface
         }
         Typecho_Plugin::factory('Widget_Feedback')->comment = array(__CLASS__, 'comment');
         Typecho_Plugin::factory('Widget_Contents_Post_Edit')->finishPublish = array(__CLASS__, 'handlePostPublish');
+        Typecho_Plugin::factory('Widget_Contents_Page_Edit')->finishPublish = array(__CLASS__, 'handlePostPublish');
         Typecho_Plugin::factory('Widget_Comments_Edit')->mark = array(__CLASS__, 'handleCommentMark');
         Typecho_Plugin::factory('index.php')->end = array(__CLASS__, 'handleRequestEnd');
 
@@ -217,11 +218,12 @@ class Restful_Plugin implements Typecho_Plugin_Interface
             'moriWebhookEvents',
             array(
                 'post' => _t('文章发布/更新'),
+                'page' => _t('页面发布/更新'),
                 'comment' => _t('评论通过审核'),
                 'settings' => _t('网站设置变更'),
                 'meta' => _t('新增/更新分类标签'),
             ),
-            array('post', 'comment', 'settings', 'meta'),
+            array('post', 'page', 'comment', 'settings', 'meta'),
             _t('Mori 更新触发事件'),
             _t('勾选需要触发 Mori 更新的事件。')
         );
@@ -354,20 +356,30 @@ function restfulUpgrade(e) {
     }
 
     /**
-     * 文章发布/更新后通知 Mori
+     * 文章/页面发布或更新后通知 Mori
      *
      * @param array|object $contents
-     * @param Widget_Contents_Post_Edit $edit
+     * @param Widget_Contents_Post_Edit|Widget_Contents_Page_Edit $edit
      * @return void
      */
     public static function handlePostPublish($contents, $edit)
     {
-        $type = self::readValue($contents, 'type', 'post');
-        if ($type !== 'post') {
+        $type = self::readValue($contents, 'type');
+        if (!is_string($type) || trim($type) === '') {
+            $type = is_object($edit) && strpos(get_class($edit), 'Page') !== false ? 'page' : 'post';
+        }
+        $type = strtolower(trim($type));
+
+        if ($type !== 'post' && $type !== 'page') {
             return;
         }
 
-        self::notifyMori('post.publish', self::buildContentPayload($contents));
+        $payload = self::buildContentPayload($contents);
+        if (!isset($payload['type'])) {
+            $payload['type'] = $type;
+        }
+
+        self::notifyMori($type . '.publish', $payload);
     }
 
     /**
@@ -520,6 +532,9 @@ function restfulUpgrade(e) {
         }
 
         $events = self::normalizeMoriEvents($config->moriWebhookEvents);
+        if ($group === 'page' && in_array('post', $events, true)) {
+            return true;
+        }
         return in_array($group, $events, true);
     }
 
